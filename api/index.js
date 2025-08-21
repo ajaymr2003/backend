@@ -9,8 +9,7 @@ app.use(cors());
 app.use(express.json());
 
 // --- Firebase Admin SDK Initialization ---
-// IMPORTANT: For Vercel, use environment variables, not a file.
-if (!admin.apps.length) { // Prevent re-initialization
+if (!admin.apps.length) {
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
     admin.initializeApp({
@@ -18,19 +17,20 @@ if (!admin.apps.length) { // Prevent re-initialization
     });
     console.log("Firebase Admin SDK initialized successfully.");
   } catch (error) {
-    console.error("Error initializing Firebase Admin SDK:", error);
+    console.error("Error initializing Firebase Admin SDK. Check your environment variables.", error);
   }
 }
 
 const db = admin.firestore();
 
-// --- Constants ---
-const BATTERY_DRAIN_RATE_PERCENT_PER_SECOND = 0.5; // 1% every 2 seconds
+// =================================================================
+// --- CHANGE #1: Increased battery drain rate (4x faster) ---
+// =================================================================
+const BATTERY_DRAIN_RATE_PERCENT_PER_SECOND = 2.0; // Drains 2% every second
 
 // --- Stateless API Endpoints ---
 
-// POST /start: Starts the car simulation
-app.post('/start', async (req, res) => {
+app.post('/api/start', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).send({ message: 'Email is required.' });
 
@@ -51,14 +51,12 @@ app.post('/start', async (req, res) => {
   }
 });
 
-// POST /stop: Stops the car simulation
-app.post('/stop', async (req, res) => {
+app.post('/api/stop', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).send({ message: 'Email is required.' });
 
   const vehicleRef = db.collection('vehicles').doc(email);
   try {
-    // We need to calculate final battery level before stopping
     const vehicleDoc = await vehicleRef.get();
     if (!vehicleDoc.exists || !vehicleDoc.data().isRunning) {
         return res.status(400).send({ message: 'Car is not running.' });
@@ -71,7 +69,7 @@ app.post('/stop', async (req, res) => {
 
     await vehicleRef.update({
       isRunning: false,
-      batteryLevel: finalBatteryLevel, // Save the final calculated battery
+      batteryLevel: finalBatteryLevel,
       lastUpdated: admin.firestore.FieldValue.serverTimestamp()
     });
 
@@ -81,9 +79,8 @@ app.post('/stop', async (req, res) => {
   }
 });
 
-// GET /status: Returns the calculated current state of the car
-app.get('/status', async (req, res) => {
-    const { email } = req.query; // Get email from query parameter
+app.get('/api/status', async (req, res) => {
+    const { email } = req.query;
     if (!email) return res.status(400).send({ message: 'Email query parameter is required.' });
 
     const vehicleRef = db.collection('vehicles').doc(email);
@@ -96,7 +93,6 @@ app.get('/status', async (req, res) => {
         const data = vehicleDoc.data();
         
         if (!data.isRunning) {
-            // If car is not running, return its last known state
             return res.status(200).send({
                 email: data.email,
                 isRunning: false,
@@ -104,19 +100,25 @@ app.get('/status', async (req, res) => {
             });
         }
         
-        // If car IS running, calculate the current battery level
         const startTime = data.startTime.toDate();
         const elapsedSeconds = (new Date() - startTime) / 1000;
         const batteryDrained = elapsedSeconds * BATTERY_DRAIN_RATE_PERCENT_PER_SECOND;
         const currentBatteryLevel = Math.max(0, Math.round(100 - batteryDrained));
 
-        // Check for low battery and send notification if needed
+        // =================================================================
+        // --- CHANGE #2: Update Firestore with the new battery level ---
+        // This makes the database "live" on every poll.
+        // =================================================================
+        await vehicleRef.update({ 
+          batteryLevel: currentBatteryLevel,
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        });
+
         if (currentBatteryLevel <= 20 && !data.notificationSent) {
             await sendLowBatteryNotification(email, currentBatteryLevel);
-            await vehicleRef.update({ notificationSent: true }); // Mark as sent
+            await vehicleRef.update({ notificationSent: true });
         }
 
-        // If battery is depleted, stop the car
         if (currentBatteryLevel <= 0) {
             await vehicleRef.update({ isRunning: false, batteryLevel: 0 });
             return res.status(200).send({ email, isRunning: false, batteryLevel: 0 });
@@ -133,8 +135,6 @@ app.get('/status', async (req, res) => {
     }
 });
 
-
-// Helper function to send notification
 async function sendLowBatteryNotification(email, batteryLevel) {
   try {
     const userDoc = await db.collection('users').doc(email).get();
