@@ -1,227 +1,164 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
-const path = require('path');
 
-// Ensure env vars from backend/.env.local are loaded when running locally
-require('dotenv').config({ path: path.resolve(__dirname, '..', '.env.local') });
+require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env.local') });
 
 const app = express();
-
-// --- Middleware ---
-app.use(cors());
+app.use(cors({ origin: ['https://smartevv.vercel.app', 'http://localhost:3000'] }));
 app.use(express.json());
 
-// --- Firebase Admin SDK Initialization ---
+// ... (Your Firebase initialization code remains the same) ...
 let db;
 let rtdb;
-
-if (!admin.apps.length) {
-  try {
-    const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    if (!serviceAccountRaw) {
-      throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY environment variable is not set.');
-    }
-
-    // Robust parse: try direct JSON.parse, otherwise strip surrounding quotes and retry.
-    let serviceAccount;
-    try {
-      serviceAccount = JSON.parse(serviceAccountRaw);
-    } catch (parseErr) {
-      // remove surrounding quotes if present and unescape common sequences
-      const stripped = serviceAccountRaw.replace(/^\s*"(.*)"\s*$/s, '$1').replace(/\\n/g, '\n');
-      try {
-        serviceAccount = JSON.parse(stripped);
-      } catch (finalErr) {
-        throw new Error('Unable to parse FIREBASE_SERVICE_ACCOUNT_KEY as JSON.');
-      }
-    }
-
-    const projectId = serviceAccount.project_id;
-    // compute databaseURL locally (do not overwrite process.env unless you want to)
-    const databaseURL = process.env.FIREBASE_DATABASE_URL || (projectId ? `https://${projectId}.firebaseio.com` : null);
-    if (!databaseURL) {
-      throw new Error('FIREBASE_DATABASE_URL not set and service account missing project_id. Set FIREBASE_DATABASE_URL explicitly.');
-    }
-
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      databaseURL
-    });
-    console.log("Firebase Admin SDK initialized successfully.");
-  } catch (error) {
-    console.error("Error initializing Firebase Admin SDK. Check your environment variables (FIREBASE_SERVICE_ACCOUNT_KEY and FIREBASE_DATABASE_URL).", error);
-    // Fail fast so the app doesn't continue with an uninitialized admin instance
-    throw error;
-  }
-}
-
+if (!admin.apps.length) { try { const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_KEY; if (!serviceAccountRaw) throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY is not set.'); let serviceAccount = JSON.parse(serviceAccountRaw); admin.initializeApp({ credential: admin.credential.cert(serviceAccount), databaseURL: process.env.FIREBASE_DATABASE_URL }); console.log("Firebase Admin SDK initialized successfully."); } catch (error) { console.error("Error initializing Firebase Admin SDK.", error); throw error; } }
 db = admin.firestore();
-try {
-  rtdb = admin.database();
-} catch (err) {
-  console.error('Realtime Database not available:', err);
-  rtdb = null;
-}
+rtdb = admin.database();
 
-// Helper to return either a real RTDB ref or a no-op ref (prevents runtime crashes if RTDB isn't available)
-function getRtdbRef(path) {
-  if (!rtdb) {
-    return {
-      set: async (...args) => { console.warn('RTDB disabled; set ignored for', path, args); },
-      update: async (...args) => { console.warn('RTDB disabled; update ignored for', path, args); }
-    };
-  }
-  return rtdb.ref(path);
-}
+function encodeEmailForRtdb(email) { return email.replace(/\./g, ','); }
 
-// --- Constants ---
-const BATTERY_DRAIN_RATE_PERCENT_PER_SECOND = 2.0;
+// --- YOUR /api/stations route (this should already be corrected from previous steps) ---
+app.get('/api/stations', async (req, res) => { try { const stationsRef = db.collection('stations'); const snapshot = await stationsRef.orderBy('name').get(); if (snapshot.empty) return res.status(200).json({ stations: [] }); const stations = snapshot.docs.map(doc => { const data = doc.data(); return { id: doc.id, name: data.name, address: data.address, latitude: data.latitude, longitude: data.longitude, slots: data.slots || [] }; }); res.status(200).json({ stations }); } catch (error) { res.status(500).send({ message: 'Failed to fetch stations.', error: error.message }); } });
 
-// --- Helper Function ---
-function encodeEmailForRtdb(email) {
-  return email.replace(/\./g, ',');
-}
+// ... (Your other routes like slot-update remain the same) ...
 
-// --- Stateless API Endpoints ---
 
-app.post('/api/start', async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).send({ message: 'Email is required.' });
-
-  const vehicleFirestoreRef = db.collection('vehicles').doc(email);
-  const vehicleRtdbRef = getRtdbRef(`vehicles/${encodeEmailForRtdb(email)}`);
-
-  try {
-    await vehicleFirestoreRef.set({
-      email,
-      isRunning: true,
-      notificationSent: false,
-      startTime: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-
-    await vehicleRtdbRef.set({
-      email: email,
-      isRunning: true,
-      batteryLevel: 100
-    });
-
-    res.status(200).send({ message: `EV car simulation started for ${email}.` });
-  } catch (error) {
-    res.status(500).send({ message: 'Failed to start car.', error: error.message });
-  }
-});
-
-app.post('/api/stop', async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).send({ message: 'Email is required.' });
-
-  const vehicleFirestoreRef = db.collection('vehicles').doc(email);
-  const vehicleRtdbRef = getRtdbRef(`vehicles/${encodeEmailForRtdb(email)}`);
-
-  try {
-    const vehicleDoc = await vehicleFirestoreRef.get();
-    if (!vehicleDoc.exists || !vehicleDoc.data().isRunning) {
-        return res.status(400).send({ message: 'Car is not running.' });
+// =========================================================================
+// --- NEW ENDPOINT: Handles location updates from the map ---
+// =========================================================================
+app.post('/api/update-location', async (req, res) => {
+    const { email, latitude, longitude } = req.body;
+    if (!email || latitude === undefined || longitude === undefined) {
+        return res.status(400).send({ message: 'Email, latitude, and longitude are required.' });
     }
-    const data = vehicleDoc.data();
-    const startTime = data.startTime.toDate();
-    const elapsedSeconds = (new Date() - startTime) / 1000;
-    const batteryDrained = elapsedSeconds * BATTERY_DRAIN_RATE_PERCENT_PER_SECOND;
-    const finalBatteryLevel = Math.max(0, Math.round(100 - batteryDrained));
 
-    await vehicleFirestoreRef.update({
-      isRunning: false,
-      batteryLevel: finalBatteryLevel,
-      lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    await vehicleRtdbRef.update({
-      isRunning: false,
-      batteryLevel: finalBatteryLevel
-    });
-
-    res.status(200).send({ message: `EV car stopped for ${email}.` });
-  } catch (error) {
-    res.status(500).send({ message: 'Failed to stop car.', error: error.message });
-  }
+    try {
+        const vehicleRtdbRef = rtdb.ref(`vehicles/${encodeEmailForRtdb(email)}`);
+        await vehicleRtdbRef.update({
+            latitude: Number(latitude),
+            longitude: Number(longitude)
+        });
+        res.status(200).send({ message: `Location updated for ${email}.` });
+    } catch (error) {
+        console.error('Error updating location:', error);
+        res.status(500).send({ message: 'Failed to update location.', error: error.message });
+    }
 });
 
+
+// =========================================================================
+// --- MODIFIED ENDPOINT: /api/status now also returns location ---
+// =========================================================================
 app.get('/api/status', async (req, res) => {
     const { email } = req.query;
-    if (!email) return res.status(400).send({ message: 'Email query parameter is required.' });
+    if (!email) {
+        return res.status(400).send({ message: 'Email query parameter is required.' });
+    }
 
     const vehicleFirestoreRef = db.collection('vehicles').doc(email);
-    const vehicleRtdbRef = getRtdbRef(`vehicles/${encodeEmailForRtdb(email)}`);
+    const vehicleRtdbRef = rtdb.ref(`vehicles/${encodeEmailForRtdb(email)}`);
 
     try {
+        // Default state
+        let status = {
+            isRunning: false,
+            batteryLevel: 100,
+            latitude: null,
+            longitude: null
+        };
+
+        // Get live data from RTDB first
+        const rtdbSnapshot = await vehicleRtdbRef.get();
+        if (rtdbSnapshot.exists()) {
+            const rtdbData = rtdbSnapshot.val();
+            status.latitude = rtdbData.latitude || null;
+            status.longitude = rtdbData.longitude || null;
+        }
+
         const vehicleDoc = await vehicleFirestoreRef.get();
-        if (!vehicleDoc.exists) {
-            return res.status(404).send({ message: 'No vehicle data found for this email.' });
+        if (!vehicleDoc.exists || !vehicleDoc.data()) {
+            return res.status(200).send(status);
         }
 
         const data = vehicleDoc.data();
-        
-        if (!data.isRunning) {
-            return res.status(200).send({
-                email: data.email,
-                isRunning: false,
-                batteryLevel: data.batteryLevel || 0
-            });
+        status.isRunning = data.isRunning || false;
+        status.batteryLevel = data.batteryLevel || 100;
+
+        if (!data.isRunning || !data.startTime || data.startBatteryLevel === undefined) {
+            return res.status(200).send(status);
         }
-        
+
+        // Calculate current battery if running
+        const drainRate = data.drainRate || 2.0;
         const startTime = data.startTime.toDate();
         const elapsedSeconds = (new Date() - startTime) / 1000;
-        const batteryDrained = elapsedSeconds * BATTERY_DRAIN_RATE_PERCENT_PER_SECOND;
-        const currentBatteryLevel = Math.max(0, Math.round(100 - batteryDrained));
+        const batteryDrained = elapsedSeconds * drainRate;
+        let currentBatteryLevel = Math.max(0, Math.round(data.startBatteryLevel - batteryDrained));
+        
+        status.batteryLevel = currentBatteryLevel;
+        status.isRunning = currentBatteryLevel > 0 && data.isRunning;
 
-        await vehicleRtdbRef.update({ 
-          batteryLevel: currentBatteryLevel
-        });
-
+        // Sync RTDB and handle notifications/shutdown
+        await vehicleRtdbRef.update({ batteryLevel: currentBatteryLevel });
         if (currentBatteryLevel <= 20 && !data.notificationSent) {
             await sendLowBatteryNotification(email, currentBatteryLevel);
             await vehicleFirestoreRef.update({ notificationSent: true });
         }
-
-        if (currentBatteryLevel <= 0) {
+        if (currentBatteryLevel <= 0 && data.isRunning) {
             await vehicleFirestoreRef.update({ isRunning: false, batteryLevel: 0 });
             await vehicleRtdbRef.update({ isRunning: false, batteryLevel: 0 });
-            return res.status(200).send({ email, isRunning: false, batteryLevel: 0 });
+            status.isRunning = false;
         }
-
-        res.status(200).send({
-            email,
-            isRunning: true,
-            batteryLevel: currentBatteryLevel
-        });
-
+        
+        res.status(200).send(status);
     } catch (error) {
-        res.status(500).send({ message: 'Failed to get status.', error: error.message });
+        if (!res.headersSent) {
+            res.status(500).send({ message: 'Failed to get status.', error: error.message });
+        }
     }
 });
 
-async function sendLowBatteryNotification(email, batteryLevel) {
-  try {
-    const userDoc = await db.collection('users').doc(email).get();
-    if (!userDoc.exists) return;
-    const fcmToken = userDoc.data().fcmToken;
-    if (!fcmToken) return;
 
-    const message = {
-      notification: {
-        title: 'Low Battery Alert!',
-        body: `Your EV's battery is at ${batteryLevel}%. Find a charging station soon.`
-      },
-      data: { screen: 'charging_station_finder' },
-      token: fcmToken
-    };
-    await admin.messaging().send(message);
-    console.log(`Successfully sent low battery notification to ${email}`);
-  } catch (error) {
-    console.error(`Error sending push notification to ${email}:`, error);
-  }
-}
+// --- YOUR OTHER ROUTES (start, stop, reset, etc. remain the same) ---
+// --- and your sendLowBatteryNotification function           ---
 
-// Export the app for Vercel
+// ... (paste the rest of your backend file here) ...
+app.post('/api/stations/:id/update', async (req, res) => { const { id } = req.params; const { availableSlots, chargerSpeed, waitingTime } = req.body; if (availableSlots === undefined || chargerSpeed === undefined || waitingTime === undefined) { return res.status(400).send({ message: 'Missing required fields.' }); } try { const stationRef = db.collection('stations').doc(id); await stationRef.update({ availableSlots: Number(availableSlots), chargerSpeed: Number(chargerSpeed), waitingTime: Number(waitingTime) }); res.status(200).send({ message: `Station ${id} updated.` }); } catch (error) { res.status(500).send({ message: `Failed to update station ${id}.`, error: error.message }); } });
+app.post('/api/stations/bulk-update', async (req, res) => {
+    const updates = req.body.updates;
+
+    if (!Array.isArray(updates) || updates.length === 0) {
+        return res.status(400).send({ message: 'Request body must be an array of station updates.' });
+    }
+
+    try {
+        const batch = db.batch();
+
+        updates.forEach(stationUpdate => {
+            const { id, ...data } = stationUpdate;
+            if (id && data) {
+                const stationRef = db.collection('stations').doc(id);
+                // Ensure values are numbers
+                const numericData = {
+                    availableSlots: Number(data.availableSlots),
+                    chargerSpeed: Number(data.chargerSpeed),
+                    waitingTime: Number(data.waitingTime),
+                };
+                batch.update(stationRef, numericData);
+            }
+        });
+
+        await batch.commit();
+        res.status(200).send({ message: 'Stations updated successfully in batch.' });
+    } catch (error) {
+        console.error('Error in bulk update:', error);
+        res.status(500).send({ message: 'Failed to bulk update stations.', error: error.message });
+    }
+});
+app.get('/api/users', async (req, res) => { try { const usersRef = db.collection('users'); const snapshot = await usersRef.where('role', '==', 'EV User').get(); if (snapshot.empty) return res.status(200).json({ users: [] }); const userEmails = snapshot.docs.map(doc => doc.data().email); res.status(200).json({ users: userEmails }); } catch (error) { res.status(500).send({ message: 'Failed to fetch EV users.', error: error.message }); } });
+app.post('/api/start', async (req, res) => { const { email, initialBattery, drainRate } = req.body; if (!email) return res.status(400).send({ message: 'Email is required.' }); const vehicleFirestoreRef = db.collection('vehicles').doc(email); const vehicleRtdbRef = rtdb.ref(`vehicles/${encodeEmailForRtdb(email)}`); try { const vehicleDoc = await vehicleFirestoreRef.get(); if (vehicleDoc.exists && vehicleDoc.data().isRunning) return res.status(400).send({ message: 'Car is already running.' }); const stationsSnapshot = await db.collection('stations').get(); if (stationsSnapshot.empty) return res.status(404).send({ message: 'No stations found.' }); const stations = stationsSnapshot.docs; const randomStationData = stations[Math.floor(Math.random() * stations.length)].data(); const simLatitude = randomStationData.latitude; const simLongitude = randomStationData.longitude; const simLocationName = randomStationData.address; if (simLatitude == null || simLongitude == null) return res.status(500).send({ message: 'Random station missing location data.' }); const startBatteryLevel = initialBattery ? Number(initialBattery) : (vehicleDoc.exists ? (vehicleDoc.data().batteryLevel || 100) : 100); const currentDrainRate = drainRate ? Number(drainRate) : 2.0; await vehicleFirestoreRef.set({ email, isRunning: true, notificationSent: false, startTime: admin.firestore.FieldValue.serverTimestamp(), startBatteryLevel: startBatteryLevel, drainRate: currentDrainRate, }, { merge: true }); await vehicleRtdbRef.update({ isRunning: true, batteryLevel: startBatteryLevel, latitude: simLatitude, longitude: simLongitude, locationName: simLocationName, }); res.status(200).send({ message: `EV car simulation started for ${email}.` }); } catch (error) { res.status(500).send({ message: 'Failed to start car.', error: error.message }); } });
+app.post('/api/stop', async (req, res) => { const { email } = req.body; if (!email) return res.status(400).send({ message: 'Email is required.' }); const vehicleFirestoreRef = db.collection('vehicles').doc(email); const vehicleRtdbRef = rtdb.ref(`vehicles/${encodeEmailForRtdb(email)}`); try { const vehicleDoc = await vehicleFirestoreRef.get(); if (!vehicleDoc.exists || !vehicleDoc.data().isRunning) return res.status(400).send({ message: 'Car is not running.' }); const data = vehicleDoc.data(); if (!data.startTime || data.startBatteryLevel === undefined) { await vehicleFirestoreRef.update({ isRunning: false }); return res.status(400).send({ message: 'Inconsistent car state. Stopping.' }); } const drainRate = data.drainRate || 2.0; const startTime = data.startTime.toDate(); const elapsedSeconds = (new Date() - startTime) / 1000; const batteryDrained = elapsedSeconds * drainRate; const finalBatteryLevel = Math.max(0, Math.round(data.startBatteryLevel - batteryDrained)); await vehicleFirestoreRef.update({ isRunning: false, batteryLevel: finalBatteryLevel }); await vehicleRtdbRef.update({ isRunning: false, batteryLevel: finalBatteryLevel }); res.status(200).send({ message: `EV car stopped for ${email}.` }); } catch (error) { res.status(500).send({ message: 'Failed to stop car.', error: error.message }); } });
+app.post('/api/reset', async (req, res) => { const { email } = req.body; if (!email) return res.status(400).send({ message: 'Email is required.' }); const vehicleFirestoreRef = db.collection('vehicles').doc(email); const vehicleRtdbRef = rtdb.ref(`vehicles/${encodeEmailForRtdb(email)}`); try { await vehicleFirestoreRef.set({ email: email, isRunning: false, batteryLevel: 100, notificationSent: false }, { merge: true }); await vehicleRtdbRef.update({ isRunning: false, batteryLevel: 100, latitude: null, longitude: null, locationName: 'Unknown' }); res.status(200).send({ message: `Simulation for ${email} has been reset.` }); } catch (error) { res.status(500).send({ message: 'Failed to reset simulation.', error: error.message }); } });
+async function sendLowBatteryNotification(email, batteryLevel) { try { const userDoc = await db.collection('users').doc(email).get(); if (!userDoc.exists) return; const fcmToken = userDoc.data().fcmToken; if (!fcmToken) return; const message = { notification: { title: 'Low Battery Alert!', body: `Your EV's battery is at ${batteryLevel}%. Find a charging station soon.` }, data: { screen: 'charging_station_finder' }, token: fcmToken }; await admin.messaging().send(message); console.log(`Successfully dispatched low battery notification to ${email}`); } catch (error) { console.error(`Error sending push notification to ${email}:`, error); } }
+
 module.exports = app;

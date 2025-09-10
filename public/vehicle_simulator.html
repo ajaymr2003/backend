@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EV Car Simulator</title>
+
+    <!-- LEAFLET MAPPING LIBRARY -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    
+    <!-- LEAFLET ANIMATION PLUGIN -->
+    <script src="https://unpkg.com/leaflet.animatedmarker@1.0.0/src/animatedMarker.js"></script>
+
+    <style>
+        :root { --primary-color: #007bff; --success-color: #28a745; --warning-color: #ffc107; --danger-color: #dc3545; --light-color: #f8f9fa; --dark-color: #343a40; --border-color: #dee2e6; --secondary-color: #6c757d; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 0; background-color: transparent; color: var(--dark-color); }
+        .card { background-color: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); padding: 1.5rem; margin-bottom: 1.5rem; }
+        h2, h3 { font-size: 1.5rem; border-bottom: 2px solid var(--border-color); padding-bottom: 0.75rem; margin-bottom: 1.5rem; font-weight: 600; margin-top: 0; }
+        .control-group { margin-bottom: 1rem; }
+        .control-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: var(--secondary-color); font-size: 0.9rem; }
+        select, input[type="range"] { width: 100%; box-sizing: border-box; }
+        select { padding: 0.6rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 1rem; }
+        .control-grid-3-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+        button { padding: 0.8rem 1.5rem; font-size: 1rem; cursor: pointer; border: none; border-radius: 4px; color: white; transition: background-color 0.2s; font-weight: 500; }
+        button:disabled { cursor: not-allowed; opacity: 0.65; }
+        .btn-start { background-color: var(--success-color); }
+        .btn-stop { background-color: var(--warning-color); color: var(--dark-color); }
+        .btn-reset { background-color: var(--danger-color); }
+        .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+        .button-grid .btn-reset { grid-column: 1 / -1; }
+        .live-status { background-color: var(--light-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 8px; text-align: center; }
+        .live-status .status-value { font-size: 1.75rem; font-weight: 700; color: var(--primary-color); margin: 0.25rem 0 1rem 0; }
+        .live-status #runningStatus.running { color: var(--success-color); }
+        .live-status #runningStatus.stopped { color: var(--danger-color); }
+        #map { height: 250px; width: 100%; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem; background-color: #e9ecef; }
+        .map-card { padding: 0; }
+        .map-card h3 { padding: 1.5rem 1.5rem 0 1.5rem; margin-bottom: 1rem; border: none; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>EV Car Simulator</h2>
+        <div class="control-group">
+            <label for="userSelect">1. Select User</label>
+            <select id="userSelect"><option value="" disabled selected>Loading users...</option></select>
+        </div>
+        <div class="control-group">
+            <label for="manualBatterySlider">2. Manual Battery Override (when stopped)</label>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <input type="range" id="manualBatterySlider" min="0" max="100" value="100" disabled>
+                <span id="manualBatteryValue" style="font-weight: bold; width: 45px;">100%</span>
+            </div>
+        </div>
+        <div class="control-group control-grid-3-col">
+            <div>
+                <label for="initialBatterySelect">Initial Battery %</label>
+                <select id="initialBatterySelect">
+                    <option value="100" selected>100%</option><option value="80">80%</option><option value="50">50%</option><option value="25">25%</option><option value="15">15%</option>
+                </select>
+            </div>
+            <div>
+                <label for="drainRateSelect">Drain Speed</label>
+                <select id="drainRateSelect">
+                    <option value="1.0">Slow</option><option value="2.0" selected>Normal</option><option value="4.0">Fast</option>
+                </select>
+            </div>
+            <div>
+                <label for="vehicleSpeedSelect">Vehicle Speed</label>
+                <select id="vehicleSpeedSelect">
+                    <option value="slow">Slow</option><option value="normal" selected>Normal</option><option value="fast">Fast</option><option value="ludicrous">Ludicrous</option>
+                </select>
+            </div>
+        </div>
+        <div class="control-group button-grid">
+            <button id="startButton" class="btn-start" disabled>Start Car</button>
+            <button id="stopButton" class="btn-stop" disabled>Pause Car</button>
+            <button id="resetButton" class="btn-reset" disabled>Reset</button>
+        </div>
+    </div>
+    <div class="card map-card">
+        <h3>3. Select Vehicle Location</h3>
+        <div id="map"></div>
+    </div>
+    <div class="card live-status">
+        <h3>Live Status</h3>
+        <p><strong>User:</strong> <span id="currentUser">None</span></p>
+        <p class="status-value" id="batteryLevel">-- %</p>
+        <p><strong>Status:</strong> <span id="runningStatus" class="stopped">Not Running</span></p>
+    </div>
+
+    <!-- The JavaScript logic is now correctly linked from an external file -->
+    <script src="./js/vehicle_simulator.js"></script>
+</body>
+</html>
