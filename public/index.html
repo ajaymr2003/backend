@@ -10,14 +10,40 @@
             margin: 0;
             background-color: #e9ecef;
             color: #343a40;
-            overflow: hidden; /* Prevents double scrollbars */
-        }
-        .dashboard-container {
             display: flex;
-            gap: 2rem;
-            padding: 2rem;
-            height: calc(100vh - 4rem); /* Full viewport height minus padding */
-            box-sizing: border-box;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .nav-bar {
+            background-color: #343a40;
+            padding: 10px 20px;
+            display: flex;
+            gap: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            flex-shrink: 0; /* Prevents the nav bar from shrinking */
+        }
+        .nav-btn {
+            padding: 10px 20px;
+            font-size: 1rem;
+            font-weight: 500;
+            color: #fff;
+            background-color: #6c757d;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .nav-btn:hover {
+            background-color: #5a6268;
+        }
+        .nav-btn.active {
+            background-color: #007bff;
+        }
+        .content-area {
+            flex-grow: 1; /* Takes up all remaining space */
+            padding: 1.5rem;
+            overflow: hidden; /* Important for iframe containment */
         }
         .dashboard-iframe {
             border: none;
@@ -25,24 +51,51 @@
             height: 100%;
             border-radius: 8px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            background-color: #fff; /* Background for loading */
         }
-        .vehicle-col {
-            flex: 1;
-            min-width: 420px;
-        }
-        .station-col {
-            flex: 2;
+        .hidden {
+            display: none;
         }
     </style>
 </head>
 <body>
-    <div class="dashboard-container">
-        <div class="vehicle-col">
-            <iframe src="./vehicle_simulator.html" class="dashboard-iframe" title="Vehicle Simulator"></iframe>
-        </div>
-        <div class="station-col">
-            <iframe src="./station_control.html" class="dashboard-iframe" title="Station Control Center"></iframe>
-        </div>
+
+    <div class="nav-bar">
+        <button id="vehicleNavBtn" class="nav-btn active">Vehicle Simulator</button>
+        <button id="stationNavBtn" class="nav-btn">Station Control</button>
     </div>
+
+    <div class="content-area">
+        <iframe id="vehicleFrame" src="./vehicle_simulator.html" class="dashboard-iframe" title="Vehicle Simulator"></iframe>
+        <iframe id="stationFrame" src="./station_control.html" class="dashboard-iframe hidden" title="Station Control Center"></iframe>
+    </div>
+
+    <script>
+        const vehicleNavBtn = document.getElementById('vehicleNavBtn');
+        const stationNavBtn = document.getElementById('stationNavBtn');
+        const vehicleFrame = document.getElementById('vehicleFrame');
+        const stationFrame = document.getElementById('stationFrame');
+
+        vehicleNavBtn.addEventListener('click', () => {
+            // Show vehicle simulator
+            vehicleFrame.classList.remove('hidden');
+            stationFrame.classList.add('hidden');
+
+            // Update button styles
+            vehicleNavBtn.classList.add('active');
+            stationNavBtn.classList.remove('active');
+        });
+
+        stationNavBtn.addEventListener('click', () => {
+            // Show station control
+            stationFrame.classList.remove('hidden');
+            vehicleFrame.classList.add('hidden');
+
+            // Update button styles
+            stationNavBtn.classList.add('active');
+            vehicleNavBtn.classList.remove('active');
+        });
+    </script>
+
 </body>
 </html>

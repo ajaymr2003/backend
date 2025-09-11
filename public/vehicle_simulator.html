@@ -19,68 +19,82 @@
         h2, h3 { font-size: 1.5rem; border-bottom: 2px solid var(--border-color); padding-bottom: 0.75rem; margin-bottom: 1.5rem; font-weight: 600; margin-top: 0; }
         .control-group { margin-bottom: 1rem; }
         .control-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: var(--secondary-color); font-size: 0.9rem; }
-        select, input[type="range"] { width: 100%; box-sizing: border-box; }
-        select { padding: 0.6rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 1rem; }
-        .control-grid-3-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+        select { padding: 0.6rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 1rem; width: 100%; box-sizing: border-box; }
+        .control-grid-2-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         button { padding: 0.8rem 1.5rem; font-size: 1rem; cursor: pointer; border: none; border-radius: 4px; color: white; transition: background-color 0.2s; font-weight: 500; }
         button:disabled { cursor: not-allowed; opacity: 0.65; }
         .btn-start { background-color: var(--success-color); }
         .btn-stop { background-color: var(--warning-color); color: var(--dark-color); }
         .btn-reset { background-color: var(--danger-color); }
+        .btn-secondary { background-color: var(--secondary-color); }
+        .btn-secondary.active { background-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25); }
         .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
         .button-grid .btn-reset { grid-column: 1 / -1; }
         .live-status { background-color: var(--light-color); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 8px; text-align: center; }
         .live-status .status-value { font-size: 1.75rem; font-weight: 700; color: var(--primary-color); margin: 0.25rem 0 1rem 0; }
         .live-status #runningStatus.running { color: var(--success-color); }
         .live-status #runningStatus.stopped { color: var(--danger-color); }
-        #map { height: 250px; width: 100%; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem; background-color: #e9ecef; }
-        .map-card { padding: 0; }
-        .map-card h3 { padding: 1.5rem 1.5rem 0 1.5rem; margin-bottom: 1rem; border: none; }
+        #map { height: 450px; width: 100%; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 1.5rem; background-color: #e9ecef; }
+        .map-card { padding: 1.5rem; }
+        .instruction-text { text-align: center; margin-top: -1rem; margin-bottom: 1rem; font-size: 0.9rem; color: var(--secondary-color); font-weight: 500; }
+        /* NEW: Styles for the route information panel */
+        #routeInfo { background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 1rem; margin-top: 1rem; text-align: center; display: none; }
+        #routeInfo span { font-weight: 600; color: var(--primary-color); }
     </style>
 </head>
 <body>
     <div class="card">
         <h2>EV Car Simulator</h2>
         <div class="control-group">
-            <label for="userSelect">1. Select User</label>
+            <label>1. Select User</label>
             <select id="userSelect"><option value="" disabled selected>Loading users...</option></select>
         </div>
         <div class="control-group">
-            <label for="manualBatterySlider">2. Manual Battery Override (when stopped)</label>
-            <div style="display: flex; align-items: center; gap: 1rem;">
-                <input type="range" id="manualBatterySlider" min="0" max="100" value="100" disabled>
-                <span id="manualBatteryValue" style="font-weight: bold; width: 45px;">100%</span>
+            <label>2. Configure Simulation</label>
+            <div class="control-grid-2-col">
+                <div>
+                    <label for="initialBatterySelect">Initial Battery</label>
+                    <select id="initialBatterySelect">
+                        <option value="100" selected>100%</option><option value="80">80%</option><option value="50">50%</option><option value="25">25%</option><option value="15">15%</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="drainRateSelect">Drain Rate</label>
+                    <select id="drainRateSelect">
+                        <option value="1.0">Slow</option><option value="2.0" selected>Normal</option><option value="4.0">Fast</option>
+                    </select>
+                </div>
             </div>
-        </div>
-        <div class="control-group control-grid-3-col">
-            <div>
-                <label for="initialBatterySelect">Initial Battery %</label>
-                <select id="initialBatterySelect">
-                    <option value="100" selected>100%</option><option value="80">80%</option><option value="50">50%</option><option value="25">25%</option><option value="15">15%</option>
-                </select>
-            </div>
-            <div>
-                <label for="drainRateSelect">Drain Speed</label>
-                <select id="drainRateSelect">
-                    <option value="1.0">Slow</option><option value="2.0" selected>Normal</option><option value="4.0">Fast</option>
-                </select>
-            </div>
-            <div>
-                <label for="vehicleSpeedSelect">Vehicle Speed</label>
-                <select id="vehicleSpeedSelect">
-                    <option value="slow">Slow</option><option value="normal" selected>Normal</option><option value="fast">Fast</option><option value="ludicrous">Ludicrous</option>
-                </select>
-            </div>
-        </div>
-        <div class="control-group button-grid">
-            <button id="startButton" class="btn-start" disabled>Start Car</button>
-            <button id="stopButton" class="btn-stop" disabled>Pause Car</button>
-            <button id="resetButton" class="btn-reset" disabled>Reset</button>
         </div>
     </div>
     <div class="card map-card">
-        <h3>3. Select Vehicle Location</h3>
+        <h3>3. Set Route & Speed</h3>
+        <p id="mapInstruction" class="instruction-text">Click map to set vehicle's <strong>Start Point</strong>.</p>
         <div id="map"></div>
+        <div class="control-grid-2-col">
+            <button id="setDestinationButton" class="btn-secondary">Click to Set Destination</button>
+            <div>
+                 <label for="vehicleSpeedSelect">Average Vehicle Speed</label>
+                 <!-- MODIFIED: Dropdown now uses km/h values -->
+                 <select id="vehicleSpeedSelect">
+                    <option value="30">30 km/h (City)</option>
+                    <option value="60" selected>60 km/h (Town)</option>
+                    <option value="500">120 km/h (Highway)</option>
+                 </select>
+            </div>
+        </div>
+        <!-- NEW: Information panel for the route -->
+        <div id="routeInfo">
+            Route Distance: <span id="routeDistance">--</span> km | Estimated Time: <span id="routeTime">--</span>
+        </div>
+    </div>
+    <div class="card">
+         <h3>4. Control Ride</h3>
+        <div class="button-grid">
+            <button id="startButton" class="btn-start" disabled>Start Ride</button>
+            <button id="stopButton" class="btn-stop" disabled>Stop Ride</button>
+            <button id="resetButton" class="btn-reset" disabled>Reset All</button>
+        </div>
     </div>
     <div class="card live-status">
         <h3>Live Status</h3>
@@ -89,7 +103,6 @@
         <p><strong>Status:</strong> <span id="runningStatus" class="stopped">Not Running</span></p>
     </div>
 
-    <!-- The JavaScript logic is now correctly linked from an external file -->
     <script src="./js/vehicle_simulator.js"></script>
 </body>
 </html>
