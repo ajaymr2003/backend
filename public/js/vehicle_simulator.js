@@ -5,9 +5,10 @@ let userEmail = null;
 
 // --- State Variables ---
 let statusInterval = null;
+let navigationPollInterval = null; // NEW: Separate interval for checking navigation requests
 let animationInterval = null;
 let locationUpdateInterval = null;
-let currentIndex = 0; // Tracks the vehicle's position along the route
+let currentIndex = 0;
 
 // --- Map Layers ---
 let map = null;
@@ -40,19 +41,13 @@ const routeTimeElem = document.getElementById('routeTime');
 userSelect.addEventListener('change', () => {
     userEmail = userSelect.value;
     if (userEmail) {
-        if (statusInterval) clearInterval(statusInterval);
-        if (animationInterval) clearInterval(animationInterval);
-        if (locationUpdateInterval) clearInterval(locationUpdateInterval);
-        if (userMarker) { userMarker.remove(); userMarker = null; }
-        if (destinationMarker) { destinationMarker.remove(); destinationMarker = null; }
-        if (vehicleMarker) { vehicleMarker.remove(); vehicleMarker = null; }
-        if (routeLine) { routeLine.remove(); routeLine = null; }
-        routeData = null;
-        currentIndex = 0;
+        resetUIAndState();
         currentUserElem.textContent = userEmail;
         resetButton.disabled = false;
-        routeInfoElem.style.display = 'none';
-        startPolling(true);
+        
+        // Start both status polling and the new navigation polling
+        startPolling(true); 
+        startNavigationPolling(); 
     }
 });
 startButton.addEventListener('click', async () => {
@@ -60,12 +55,8 @@ startButton.addEventListener('click', async () => {
         alert("Please set a valid start and destination point on the map.");
         return;
     }
-    await callApi('/start', {
-        email: userEmail,
-        initialBattery: initialBatterySelect.value,
-        drainRate: drainRateSelect.value
-    });
-    startMovementSimulation(routeData);
+    stopNavigationPolling(); // Manually starting overrides navigation listening
+    await startRide();
 });
 stopButton.addEventListener('click', () => {
     callApi('/stop', { email: userEmail });
@@ -75,17 +66,13 @@ resetButton.addEventListener('click', () => {
     callApi('/reset', { email: userEmail });
     resetSimulationState();
 });
-// MODIFIED: This listener now also handles live speed changes.
 vehicleSpeedSelect.addEventListener('change', () => {
-    displayRouteInfo(); // Always update time estimate
-    // If the animation is currently running, reschedule it with the new speed
+    displayRouteInfo();
     if (animationInterval) {
         scheduleAnimation();
     }
 });
-// NEW: Listener for live drain rate changes.
 drainRateSelect.addEventListener('change', () => {
-    // If the simulation is running, send the update to the backend
     if (userEmail && runningStatusElem.classList.contains('running')) {
         callApi('/update-drain-rate', {
             email: userEmail,
@@ -95,12 +82,94 @@ drainRateSelect.addEventListener('change', () => {
 });
 
 
-// --- Core Functions ---
-// MODIFIED: This function now allows drain rate and speed to be changed during a run.
+// --- NEW/MODIFIED Core Functions ---
+
+// NEW: Continuously poll for navigation requests.
+function startNavigationPolling() {
+    stopNavigationPolling(); // Ensure no multiple pollers are running
+    if (!userEmail) return;
+
+    console.log(`Starting navigation polling for ${userEmail}.`);
+    mapInstruction.innerHTML = "Listening for remote navigation request... or set a route manually.";
+
+    navigationPollInterval = setInterval(async () => {
+        // Only check if the simulation is NOT currently running
+        if (!runningStatusElem.classList.contains('running')) {
+            const res = await fetch(`${apiUrl}/navigation-status?email=${encodeURIComponent(userEmail)}`);
+            const navData = await res.json();
+            if (navData && navData.isNavigating === true) {
+                console.log("Remote navigation request detected!");
+                stopNavigationPolling(); // Stop polling once a request is found
+                await handleRemoteNavigation(navData);
+            }
+        } else {
+             // If simulation started, stop polling.
+            stopNavigationPolling();
+        }
+    }, 4000); // Check every 4 seconds
+}
+
+// NEW: Stop the navigation polling.
+function stopNavigationPolling() {
+    if (navigationPollInterval) {
+        console.log("Stopping navigation polling.");
+        clearInterval(navigationPollInterval);
+        navigationPollInterval = null;
+    }
+}
+
+// NEW: Logic to process the detected navigation request.
+async function handleRemoteNavigation(navData) {
+    mapInstruction.innerHTML = "<strong>Remote navigation detected!</strong> Setting route...";
+    
+    const startLatLng = L.latLng(navData.start_lat, navData.start_lng);
+    const endLatLng = L.latLng(navData.end_lat, navData.end_lng);
+
+    createOrUpdateStartMarker(startLatLng);
+    createOrUpdateDestinationMarker(endLatLng);
+
+    routeData = await fetchRoute(startLatLng, endLatLng);
+
+    if (routeData) {
+        await startRide();
+        await callApi('/end-navigation', { email: userEmail });
+    } else {
+        alert("Remote navigation failed: Could not calculate a route.");
+        startNavigationPolling(); // Resume listening if route fails
+    }
+}
+
+// NEW: Centralized function to start the ride simulation.
+async function startRide() {
+    await callApi('/start', {
+        email: userEmail,
+        initialBattery: initialBatterySelect.value,
+        drainRate: drainRateSelect.value
+    });
+    startMovementSimulation();
+}
+
+function resetUIAndState() {
+    stopPolling();
+    stopNavigationPolling();
+    if (animationInterval) clearInterval(animationInterval);
+    if (locationUpdateInterval) clearInterval(locationUpdateInterval);
+
+    if (userMarker) { userMarker.remove(); userMarker = null; }
+    if (destinationMarker) { destinationMarker.remove(); destinationMarker = null; }
+    if (vehicleMarker) { vehicleMarker.remove(); vehicleMarker = null; }
+    if (routeLine) { routeLine.remove(); routeLine = null; }
+    
+    routeData = null;
+    currentIndex = 0;
+    routeInfoElem.style.display = 'none';
+    updateControlsState(false);
+}
+
+// --- Existing Core Functions ---
 function updateControlsState(isRunning) {
     userSelect.disabled = isRunning;
     initialBatterySelect.disabled = isRunning;
-    // Drain rate and speed can now be changed live
     drainRateSelect.disabled = false;
     vehicleSpeedSelect.disabled = false;
     resetButton.disabled = isRunning;
@@ -123,7 +192,6 @@ async function fetchRoute(startLatLng, endLatLng) {
         return null;
     } catch (error) {
         console.error("Error fetching route from OSRM:", error);
-        alert("Could not fetch a route. Please try different points.");
         return null;
     }
 }
@@ -137,17 +205,12 @@ function displayRouteInfo() {
     routeTimeElem.textContent = `${timeMinutes} min`;
     routeInfoElem.style.display = 'block';
 }
-
-// NEW: This function contains only the animation logic, making it reusable.
 function scheduleAnimation() {
-    if (animationInterval) clearInterval(animationInterval); // Stop any previous animation
-
+    if (animationInterval) clearInterval(animationInterval);
     const routeCoordinates = routeData.coordinates;
     const distanceMeters = routeData.distance;
     const speedKmh = parseInt(vehicleSpeedSelect.value, 10);
     const speedMps = speedKmh * 1000 / 3600;
-
-    // Calculate total duration based on the *entire* route to keep timing consistent
     const totalDurationSeconds = speedKmh > 0 ? distanceMeters / speedMps : Infinity;
     const stepInterval = (totalDurationSeconds / routeCoordinates.length) * 1000;
 
@@ -162,29 +225,26 @@ function scheduleAnimation() {
         }
         currentIndex++;
     }, stepInterval);
-
-    console.log(`Animation (re)scheduled. Steps: ${routeCoordinates.length}, Interval: ${stepInterval.toFixed(2)} ms`);
 }
-
-// MODIFIED: This function now sets up the map and calls scheduleAnimation.
 function startMovementSimulation() {
+    stopNavigationPolling(); // Make sure listening stops when simulation runs
     if (userMarker) { userMarker.remove(); userMarker = null; }
     if (destinationMarker) { destinationMarker.remove(); destinationMarker = null; }
     if (routeLine) routeLine.remove();
     
-    currentIndex = 0; // Reset position to the start of the route
+    currentIndex = 0;
     const routeCoordinates = routeData.coordinates;
     routeLine = L.polyline(routeCoordinates, { color: '#007bff', weight: 5 }).addTo(map);
     map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
+
+    displayRouteInfo();
 
     const carIcon = L.icon({
         iconUrl: 'https://cdn-icons-png.flaticon.com/512/3039/3039898.png',
         iconSize: [38, 38], iconAnchor: [19, 38]
     });
     vehicleMarker = L.marker(routeCoordinates[0], { icon: carIcon }).addTo(map);
-
-    scheduleAnimation(); // Start the animation loop
-
+    scheduleAnimation();
     if (locationUpdateInterval) clearInterval(locationUpdateInterval);
     locationUpdateInterval = setInterval(() => {
         if (vehicleMarker) {
@@ -196,6 +256,7 @@ function startMovementSimulation() {
 async function onMapClick(e) {
     if (!userEmail) { alert("Please select a user first."); return; }
     if (runningStatusElem.classList.contains('running')) return;
+    stopNavigationPolling(); // Manual interaction stops listening
     const { lat, lng } = e.latlng;
     if (!userMarker) {
         createOrUpdateStartMarker([lat, lng]);
@@ -227,8 +288,8 @@ function resetSimulationState() {
     routeInfoElem.style.display = 'none';
     mapInstruction.innerHTML = "Click map to set vehicle's <strong>Start Point</strong>.";
     getStatus();
+    startNavigationPolling(); // Resume listening after a reset
 }
-
 const getStatus = (isInitialSetup = false) => {
     if (!userEmail) return;
     fetch(`${apiUrl}/status?email=${encodeURIComponent(userEmail)}`)
@@ -247,26 +308,26 @@ const getStatus = (isInitialSetup = false) => {
                     const vehiclePosition = [data.latitude, data.longitude];
                     createOrUpdateStartMarker(vehiclePosition);
                     map.setView(vehiclePosition, 15);
-                    mapInstruction.innerHTML = "Vehicle location loaded. Click map to set the <strong>Destination Point</strong>.";
-                } else {
-                    mapInstruction.innerHTML = "Click map to set vehicle's <strong>Start Point</strong>.";
                 }
             }
         })
         .catch(console.error);
 };
-
 function startPolling(isInitial = false) {
-    if (statusInterval) clearInterval(statusInterval);
+    stopPolling();
     getStatus(isInitial); 
     statusInterval = setInterval(() => getStatus(false), 2000);
+}
+function stopPolling() {
+    if (statusInterval) clearInterval(statusInterval);
+    statusInterval = null;
 }
 function stopMovementSimulation() {
     if (animationInterval) clearInterval(animationInterval);
     if (locationUpdateInterval) clearInterval(locationUpdateInterval);
     animationInterval = null;
     locationUpdateInterval = null;
-    currentIndex = 0; // Reset route position
+    currentIndex = 0;
     if (vehicleMarker) {
         const lastPosition = vehicleMarker.getLatLng();
         vehicleMarker.remove();
@@ -274,6 +335,7 @@ function stopMovementSimulation() {
         createOrUpdateStartMarker(lastPosition);
     }
     getStatus();
+    startNavigationPolling(); // IMPORTANT: Resume listening for navigation requests after a ride ends.
 }
 function initMap() {
     map = L.map('map').setView(defaultCenter, 12);
@@ -326,7 +388,7 @@ async function callApi(endpoint, body) {
         }
         const data = await response.json();
         console.log(`API call to ${endpoint} successful:`, data);
-        if (endpoint !== '/start') { // Avoid double-calling getStatus on start
+        if (endpoint !== '/start') {
              getStatus();
         }
         return data;
