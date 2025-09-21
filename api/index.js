@@ -21,81 +21,40 @@ function encodeEmailForRtdb(email) { return email.replace(/\./g, ','); }
 
 // --- Existing Station Routes ---
 app.get('/api/stations', async (req, res) => { try { const stationsRef = db.collection('stations'); const snapshot = await stationsRef.orderBy('name').get(); if (snapshot.empty) return res.status(200).json({ stations: [] }); const stations = snapshot.docs.map(doc => { const data = doc.data(); return { id: doc.id, name: data.name, address: data.address, latitude: data.latitude, longitude: data.longitude, slots: data.slots || [] }; }); res.status(200).json({ stations }); } catch (error) { res.status(500).send({ message: 'Failed to fetch stations.', error: error.message }); } });
-
-
-// =========================================================================
-// === NEW ENDPOINT #1: To handle a single slot status update
-// =========================================================================
 app.post('/api/stations/:id/slot-update', async (req, res) => {
     const { id } = req.params;
     const { slotIndex, isAvailable } = req.body;
-
-    if (slotIndex === undefined || isAvailable === undefined) {
-        return res.status(400).send({ message: 'slotIndex and isAvailable are required.' });
-    }
-
+    if (slotIndex === undefined || isAvailable === undefined) { return res.status(400).send({ message: 'slotIndex and isAvailable are required.' }); }
     try {
         const stationRef = db.collection('stations').doc(id);
         const stationDoc = await stationRef.get();
-
-        if (!stationDoc.exists) {
-            return res.status(404).send({ message: `Station with ID ${id} not found.` });
-        }
-
+        if (!stationDoc.exists) { return res.status(404).send({ message: `Station with ID ${id} not found.` }); }
         const station = stationDoc.data();
         const slots = station.slots || [];
-
-        if (slotIndex < 0 || slotIndex >= slots.length) {
-            return res.status(400).send({ message: `Invalid slotIndex ${slotIndex}.` });
-        }
-
-        // Create a new array with the updated slot
+        if (slotIndex < 0 || slotIndex >= slots.length) { return res.status(400).send({ message: `Invalid slotIndex ${slotIndex}.` }); }
         const updatedSlots = [...slots];
         updatedSlots[slotIndex].isAvailable = Boolean(isAvailable);
-        
-        // Recalculate the number of available slots for consistency
         const newAvailableCount = updatedSlots.filter(s => s.isAvailable).length;
-
-        // Update the document in Firestore
-        await stationRef.update({
-            slots: updatedSlots,
-            availableSlots: newAvailableCount
-        });
-
+        await stationRef.update({ slots: updatedSlots, availableSlots: newAvailableCount });
         res.status(200).send({ message: `Slot ${slotIndex} for station ${id} updated.` });
     } catch (error) {
         console.error(`Error updating slot for station ${id}:`, error);
         res.status(500).send({ message: 'Failed to update slot.', error: error.message });
     }
 });
-
-
-// =========================================================================
-// === NEW ENDPOINT #2: To handle bulk updates from presets
-// =========================================================================
 app.post('/api/stations/bulk-slot-update', async (req, res) => {
     const { updates } = req.body;
-
-    if (!Array.isArray(updates) || updates.length === 0) {
-        return res.status(400).send({ message: 'Request body must be an array of station updates.' });
-    }
-
+    if (!Array.isArray(updates) || updates.length === 0) { return res.status(400).send({ message: 'Request body must be an array of station updates.' }); }
     try {
         const batch = db.batch();
-
         updates.forEach(stationUpdate => {
             const { id, slots } = stationUpdate;
             if (id && Array.isArray(slots)) {
                 const stationRef = db.collection('stations').doc(id);
                 const newAvailableCount = slots.filter(s => s.isAvailable).length;
-
-                batch.update(stationRef, {
-                    slots: slots,
-                    availableSlots: newAvailableCount
-                });
+                batch.update(stationRef, { slots: slots, availableSlots: newAvailableCount });
             }
         });
-
         await batch.commit();
         res.status(200).send({ message: 'Stations updated successfully in batch.' });
     } catch (error) {
@@ -105,7 +64,7 @@ app.post('/api/stations/bulk-slot-update', async (req, res) => {
 });
 
 
-// --- Other existing routes for vehicle simulation ---
+// --- Vehicle simulation routes ---
 app.post('/api/update-location', async (req, res) => {
     const { email, latitude, longitude } = req.body;
     if (!email || latitude === undefined || longitude === undefined) {
@@ -120,6 +79,33 @@ app.post('/api/update-location', async (req, res) => {
         res.status(500).send({ message: 'Failed to update location.', error: error.message });
     }
 });
+
+// =========================================================================
+// === NEW ENDPOINT: To handle live drain rate updates
+// =========================================================================
+app.post('/api/update-drain-rate', async (req, res) => {
+    const { email, drainRate } = req.body;
+    if (!email || drainRate === undefined) {
+        return res.status(400).send({ message: 'Email and drainRate are required.' });
+    }
+    try {
+        const vehicleFirestoreRef = db.collection('vehicles').doc(email);
+        const vehicleDoc = await vehicleFirestoreRef.get();
+
+        if (!vehicleDoc.exists || !vehicleDoc.data().isRunning) {
+            return res.status(400).send({ message: 'Cannot update drain rate for a vehicle that is not running.' });
+        }
+
+        await vehicleFirestoreRef.update({
+            drainRate: Number(drainRate)
+        });
+        res.status(200).send({ message: `Drain rate updated for ${email}.` });
+    } catch (error) {
+        console.error('Error updating drain rate:', error);
+        res.status(500).send({ message: 'Failed to update drain rate.', error: error.message });
+    }
+});
+
 
 app.get('/api/status', async (req, res) => {
     const { email } = req.query;
