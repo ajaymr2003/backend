@@ -5,10 +5,11 @@ let userEmail = null;
 
 // --- State Variables ---
 let statusInterval = null;
-let navigationPollInterval = null; // NEW: Separate interval for checking navigation requests
+let navigationPollInterval = null; // Separate interval for checking navigation requests
 let animationInterval = null;
 let locationUpdateInterval = null;
 let currentIndex = 0;
+let arrivalAlertShown = false; // Flag to prevent repeated alerts
 
 // --- Map Layers ---
 let map = null;
@@ -22,7 +23,8 @@ const defaultCenter = [12.9716, 77.5946];
 
 // --- Get all UI elements ---
 const userSelect = document.getElementById('userSelect');
-const initialBatterySelect = document.getElementById('initialBatterySelect');
+const batteryLevelInput = document.getElementById('batteryLevelInput');
+const setBatteryButton = document.getElementById('setBatteryButton');
 const drainRateSelect = document.getElementById('drainRateSelect');
 const vehicleSpeedSelect = document.getElementById('vehicleSpeedSelect');
 const startButton = document.getElementById('startButton');
@@ -49,6 +51,18 @@ userSelect.addEventListener('change', () => {
         startPolling(true); 
         startNavigationPolling(); 
     }
+});
+setBatteryButton.addEventListener('click', () => {
+    if (!userEmail) {
+        alert("Please select a user first.");
+        return;
+    }
+    const batteryLevel = parseInt(batteryLevelInput.value, 10);
+    if (batteryLevel < 1 || batteryLevel > 100) {
+        alert("Please enter a battery level between 1 and 100.");
+        return;
+    }
+    callApi('/update-battery', { email: userEmail, batteryLevel });
 });
 startButton.addEventListener('click', async () => {
     if (!routeData) {
@@ -84,7 +98,7 @@ drainRateSelect.addEventListener('change', () => {
 
 // --- NEW/MODIFIED Core Functions ---
 
-// NEW: Continuously poll for navigation requests.
+// Continuously poll for navigation requests.
 function startNavigationPolling() {
     stopNavigationPolling(); // Ensure no multiple pollers are running
     if (!userEmail) return;
@@ -109,7 +123,7 @@ function startNavigationPolling() {
     }, 4000); // Check every 4 seconds
 }
 
-// NEW: Stop the navigation polling.
+// Stop the navigation polling.
 function stopNavigationPolling() {
     if (navigationPollInterval) {
         console.log("Stopping navigation polling.");
@@ -118,7 +132,7 @@ function stopNavigationPolling() {
     }
 }
 
-// NEW: Logic to process the detected navigation request.
+// Logic to process the detected navigation request.
 async function handleRemoteNavigation(navData) {
     mapInstruction.innerHTML = "<strong>Remote navigation detected!</strong> Setting route...";
     
@@ -132,18 +146,19 @@ async function handleRemoteNavigation(navData) {
 
     if (routeData) {
         await startRide();
-        await callApi('/end-navigation', { email: userEmail });
+        // Do not call end-navigation here; let the arrival detection handle it.
     } else {
         alert("Remote navigation failed: Could not calculate a route.");
         startNavigationPolling(); // Resume listening if route fails
     }
 }
 
-// NEW: Centralized function to start the ride simulation.
+// Centralized function to start the ride simulation.
 async function startRide() {
+    arrivalAlertShown = false; // Reset flag on new ride
     await callApi('/start', {
         email: userEmail,
-        initialBattery: initialBatterySelect.value,
+        initialBattery: batteryLevelInput.value,
         drainRate: drainRateSelect.value
     });
     startMovementSimulation();
@@ -162,6 +177,7 @@ function resetUIAndState() {
     
     routeData = null;
     currentIndex = 0;
+    arrivalAlertShown = false; // Reset flag when user changes
     routeInfoElem.style.display = 'none';
     updateControlsState(false);
 }
@@ -169,7 +185,8 @@ function resetUIAndState() {
 // --- Existing Core Functions ---
 function updateControlsState(isRunning) {
     userSelect.disabled = isRunning;
-    initialBatterySelect.disabled = isRunning;
+    batteryLevelInput.disabled = isRunning;
+    setBatteryButton.disabled = isRunning;
     drainRateSelect.disabled = false;
     vehicleSpeedSelect.disabled = false;
     resetButton.disabled = isRunning;
@@ -216,8 +233,7 @@ function scheduleAnimation() {
 
     animationInterval = setInterval(() => {
         if (currentIndex >= routeCoordinates.length) {
-            callApi('/stop', { email: userEmail });
-            stopMovementSimulation();
+            // Let the backend handle the arrival detection instead of stopping here
             return;
         }
         if (vehicleMarker) {
@@ -285,6 +301,7 @@ function resetSimulationState() {
     if (destinationMarker) { destinationMarker.remove(); destinationMarker = null; }
     if (routeLine) { routeLine.remove(); routeLine = null; }
     routeData = null;
+    arrivalAlertShown = false; // Reset flag on full reset
     routeInfoElem.style.display = 'none';
     mapInstruction.innerHTML = "Click map to set vehicle's <strong>Start Point</strong>.";
     getStatus();
@@ -299,7 +316,19 @@ const getStatus = (isInitialSetup = false) => {
             runningStatusElem.textContent = isRunning ? 'Running' : 'Not Running';
             runningStatusElem.className = isRunning ? 'running' : 'stopped';
             batteryLevelElem.textContent = `${data.batteryLevel} %`;
+            batteryLevelInput.value = data.batteryLevel; // <-- THIS IS THE FIX
+
+            // Check for the arrival flag AND the local alert flag
+            if (data.arrivalCompleted && !arrivalAlertShown) {
+                arrivalAlertShown = true; // Set flag immediately to prevent loop
+                alert("Vehicle has arrived at the destination station!");
+                mapInstruction.innerHTML = `<strong>Vehicle has arrived at the destination station!</strong> Ready for next command.`;
+                // Acknowledge the arrival and clear the navigation state on the server
+                callApi('/end-navigation', { email: userEmail });
+            }
+
             updateControlsState(isRunning);
+
             if (!isRunning && vehicleMarker) {
                 stopMovementSimulation();
             }
@@ -446,6 +475,10 @@ async function initialize() {
             option.textContent = email;
             userSelect.appendChild(option);
         });
+        if (userData.users && userData.users.length > 0) {
+            userSelect.value = userData.users[0];
+            userSelect.dispatchEvent(new Event('change'));
+        }
     } catch (error) {
         console.error('Failed to load users:', error);
     }
